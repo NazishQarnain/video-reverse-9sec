@@ -7,17 +7,18 @@ const { processVideo9Reverse } = require('./ffmpeg-utils');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ensure uploads & processed dirs exist
+// ensure uploads & processed dirs exist on every start
 const uploadsDir = path.join(__dirname, 'uploads');
 const processedDir = path.join(__dirname, 'processed');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
-if (!fs.existsSync(processedDir)) fs.mkdirSync(processedDir);
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+if (!fs.existsSync(processedDir)) fs.mkdirSync(processedDir, { recursive: true });
 
-// static files
+// middlewares
 app.use('/processed', express.static(processedDir));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(fileUpload());
 
+// upload + processing route
 app.post('/upload', async (req, res) => {
   try {
     if (!req.files || !req.files.video) {
@@ -25,17 +26,32 @@ app.post('/upload', async (req, res) => {
     }
 
     const video = req.files.video;
+
+    console.log('Incoming file:', {
+      name: video.name,
+      size: video.size,
+      mimetype: video.mimetype,
+    });
+
+    const safeName = video.name.replace(/\s+/g, '_');
     const uploadPath = path.join(
       uploadsDir,
-      Date.now() + '_' + video.name.replace(/\s+/g, '_')
+      Date.now() + '_' + safeName
     );
 
-    // save upload
-    try {
-      await video.mv(uploadPath);
-    } catch (e) {
-      console.error('Upload save error', e);
-      return res.status(500).json({ error: 'Upload save failed' });
+    console.log('Saving to:', uploadPath);
+
+    // save upload (callback -> promise)
+    await new Promise((resolve, reject) => {
+      video.mv(uploadPath, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    if (!fs.existsSync(uploadPath)) {
+      console.error('File not found after mv:', uploadPath);
+      return res.status(500).json({ error: 'Upload save failed (not found)' });
     }
 
     const outputPath = path.join(
@@ -46,10 +62,10 @@ app.post('/upload', async (req, res) => {
     await processVideo9Reverse(uploadPath, outputPath);
 
     const publicPath = '/processed/' + path.basename(outputPath);
-    res.json({ url: publicPath });
+    return res.json({ url: publicPath });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Processing failed' });
+    console.error('Upload/processing error:', err);
+    return res.status(500).json({ error: 'Processing failed' });
   }
 });
 
